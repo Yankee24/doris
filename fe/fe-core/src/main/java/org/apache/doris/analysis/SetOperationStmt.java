@@ -17,9 +17,13 @@
 
 package org.apache.doris.analysis;
 
+import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.TableIf;
+import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
+import org.apache.doris.common.Pair;
 import org.apache.doris.common.UserException;
+import org.apache.doris.qe.SessionVariable;
 import org.apache.doris.rewrite.ExprRewriter;
 
 import com.google.common.base.Preconditions;
@@ -32,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Representation of a set ops with its list of operands, and optional order by and limit.
@@ -47,7 +52,8 @@ import java.util.Set;
  * used is in materializeRequiredSlots() because that is called before plan generation
  * and we need to mark the slots of resolved exprs as materialized.
  */
-public class SetOperationStmt extends QueryStmt {
+@Deprecated
+public class SetOperationStmt extends QueryStmt implements NotFallbackInParser {
     private static final Logger LOG = LogManager.getLogger(SetOperationStmt.class);
 
     public enum Operation {
@@ -229,6 +235,13 @@ public class SetOperationStmt extends QueryStmt {
         }
     }
 
+    public void forbiddenMVRewrite() {
+        super.forbiddenMVRewrite();
+        for (SetOperand op : operands) {
+            op.getQueryStmt().forbiddenMVRewrite();
+        }
+    }
+
     /**
      * Propagates DISTINCT from left to right, and checks that all
      * set operands are set compatible, adding implicit casts if necessary.
@@ -303,7 +316,7 @@ public class SetOperationStmt extends QueryStmt {
         baseTblResultExprs = resultExprs;
 
         if (hasOutFileClause()) {
-            outFileClause.analyze(analyzer, resultExprs);
+            outFileClause.analyze(analyzer, resultExprs, getColLabels());
         }
     }
 
@@ -476,8 +489,33 @@ public class SetOperationStmt extends QueryStmt {
             LOG.trace("SetOperationStmt.createMetadata: tupleId=" + tupleId.toString());
         }
 
-        // One slot per expr in the select blocks. Use first select block as representative.
-        List<Expr> firstSelectExprs = operands.get(0).getQueryStmt().getResultExprs();
+        // When multiple operands exist here, we should use compatible type for each slot. For example,
+        // for `SELECT decimal(10,1) UNION ALL decimal(6,4)`, we should use decimal(10,4) as the result type.
+        List<Pair<Type, Boolean>> selectTypeWithNullable = operands.get(0).getQueryStmt().getResultExprs().stream()
+                .map(expr -> Pair.of(expr.getType(), expr.isNullable())).collect(Collectors.toList());
+        for (int i = 1; i < operands.size(); i++) {
+            for (int j = 0; j < selectTypeWithNullable.size(); j++) {
+                if (selectTypeWithNullable.get(j).first.isDecimalV2()
+                        && operands.get(i).getQueryStmt().getResultExprs().get(j).getType().isDecimalV2()) {
+                    selectTypeWithNullable.get(j).first = ScalarType.getAssignmentCompatibleDecimalV2Type(
+                            (ScalarType) selectTypeWithNullable.get(j).first,
+                            (ScalarType) operands.get(i).getQueryStmt().getResultExprs().get(j).getType());
+                }
+                if (selectTypeWithNullable.get(j).first.isDecimalV3()
+                        && operands.get(i).getQueryStmt().getResultExprs().get(j).getType().isDecimalV3()) {
+                    selectTypeWithNullable.get(j).first = ScalarType.getAssignmentCompatibleDecimalV3Type(
+                            (ScalarType) selectTypeWithNullable.get(j).first,
+                            (ScalarType) operands.get(i).getQueryStmt().getResultExprs().get(j).getType());
+                }
+                if (selectTypeWithNullable.get(j).first.isStringType() && operands.get(i)
+                        .getQueryStmt().getResultExprs().get(j).getType().isStringType()) {
+                    selectTypeWithNullable.get(j).first = ScalarType.getAssignmentCompatibleType(
+                            (ScalarType) selectTypeWithNullable.get(j).first,
+                            (ScalarType) operands.get(i).getQueryStmt().getResultExprs().get(j).getType(),
+                            false, SessionVariable.getEnableDecimal256());
+                }
+            }
+        }
 
         // TODO(zc) Column stats
         /*
@@ -497,12 +535,11 @@ public class SetOperationStmt extends QueryStmt {
         */
 
         // Create tuple descriptor and slots.
-        for (int i = 0; i < firstSelectExprs.size(); ++i) {
-            Expr expr = firstSelectExprs.get(i);
+        for (int i = 0; i < selectTypeWithNullable.size(); ++i) {
             SlotDescriptor slotDesc = analyzer.addSlotDescriptor(tupleDesc);
             slotDesc.setLabel(getColLabels().get(i));
-            slotDesc.setType(expr.getType());
-            slotDesc.setIsNullable(expr.isNullable());
+            slotDesc.setType(selectTypeWithNullable.get(i).first);
+            slotDesc.setIsNullable(selectTypeWithNullable.get(i).second);
             // TODO(zc)
             // slotDesc.setStats(columnStats.get(i));
             SlotRef outputSlotRef = new SlotRef(slotDesc);
@@ -777,6 +814,12 @@ public class SetOperationStmt extends QueryStmt {
     }
 
     @Override
+    public ArrayList<List<String>> getSubColPath() {
+        Preconditions.checkState(operands.size() > 0);
+        return operands.get(0).getQueryStmt().getSubColPath();
+    }
+
+    @Override
     public void setNeedToSql(boolean needToSql) {
         super.setNeedToSql(needToSql);
         for (SetOperand operand : operands) {
@@ -938,5 +981,12 @@ public class SetOperationStmt extends QueryStmt {
         public SetOperand clone() {
             return new SetOperand(this);
         }
+
     }
+
+    @Override
+    public StmtType stmtType() {
+        return StmtType.SELECT;
+    }
+
 }

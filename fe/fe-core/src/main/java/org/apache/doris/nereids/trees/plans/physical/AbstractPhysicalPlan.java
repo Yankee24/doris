@@ -21,47 +21,71 @@ import org.apache.doris.nereids.memo.GroupExpression;
 import org.apache.doris.nereids.properties.LogicalProperties;
 import org.apache.doris.nereids.properties.PhysicalProperties;
 import org.apache.doris.nereids.trees.plans.AbstractPlan;
+import org.apache.doris.nereids.trees.plans.Explainable;
 import org.apache.doris.nereids.trees.plans.Plan;
 import org.apache.doris.nereids.trees.plans.PlanType;
+import org.apache.doris.nereids.util.MutableState;
+import org.apache.doris.qe.ConnectContext;
+import org.apache.doris.statistics.Statistics;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Lists;
+
+import java.util.List;
 import java.util.Optional;
 import javax.annotation.Nullable;
 
 /**
  * Abstract class for all concrete physical plan.
  */
-public abstract class AbstractPhysicalPlan extends AbstractPlan implements PhysicalPlan {
-
+public abstract class AbstractPhysicalPlan extends AbstractPlan implements PhysicalPlan, Explainable {
     protected final PhysicalProperties physicalProperties;
+    private final List<RuntimeFilter> appliedRuntimeFilters = Lists.newArrayList();
 
-    /**
-     * create physical plan by op, logicalProperties and children.
-     */
     public AbstractPhysicalPlan(PlanType type, LogicalProperties logicalProperties, Plan... children) {
         this(type, Optional.empty(), logicalProperties, children);
     }
 
-    /**
-     * create physical plan by groupExpression, logicalProperties and children.
-     *
-     * @param type node type
-     * @param groupExpression group expression contains plan
-     * @param logicalProperties logical properties of this plan
-     * @param children children of this plan
-     */
     public AbstractPhysicalPlan(PlanType type, Optional<GroupExpression> groupExpression,
-                                LogicalProperties logicalProperties, Plan... children) {
-        this(type, groupExpression, logicalProperties, PhysicalProperties.ANY, children);
+            LogicalProperties logicalProperties, Plan... children) {
+        this(type, groupExpression, logicalProperties, PhysicalProperties.ANY, null, children);
     }
 
     public AbstractPhysicalPlan(PlanType type, Optional<GroupExpression> groupExpression,
-            LogicalProperties logicalProperties, @Nullable PhysicalProperties physicalProperties, Plan... children) {
-        super(type, groupExpression, Optional.of(logicalProperties), children);
-        this.physicalProperties = physicalProperties == null ? PhysicalProperties.ANY : physicalProperties;
+            LogicalProperties logicalProperties, @Nullable PhysicalProperties physicalProperties,
+            Statistics statistics, Plan... children) {
+        super(type, groupExpression,
+                logicalProperties == null ? Optional.empty() : Optional.of(logicalProperties),
+                statistics, ImmutableList.copyOf(children));
+        this.physicalProperties =
+                physicalProperties == null ? PhysicalProperties.ANY : physicalProperties;
     }
 
     public PhysicalProperties getPhysicalProperties() {
         return physicalProperties;
     }
 
+    @Override
+    public Plan getExplainPlan(ConnectContext ctx) {
+        return this;
+    }
+
+    public <T extends AbstractPhysicalPlan> AbstractPhysicalPlan copyStatsAndGroupIdFrom(T from) {
+        T newPlan = (T) withPhysicalPropertiesAndStats(
+                from.getPhysicalProperties(), from.getStats());
+        newPlan.setMutableState(MutableState.KEY_GROUP, from.getGroupIdAsString());
+        return newPlan;
+    }
+
+    public List<RuntimeFilter> getAppliedRuntimeFilters() {
+        return appliedRuntimeFilters;
+    }
+
+    public void addAppliedRuntimeFilter(RuntimeFilter filter) {
+        appliedRuntimeFilters.add(filter);
+    }
+
+    public void removeAppliedRuntimeFilter(RuntimeFilter filter) {
+        appliedRuntimeFilters.remove(filter);
+    }
 }

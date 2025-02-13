@@ -17,14 +17,22 @@
 
 package org.apache.doris.nereids.trees.plans.algebra;
 
+import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.trees.expressions.Alias;
+import org.apache.doris.nereids.trees.expressions.ExprId;
 import org.apache.doris.nereids.trees.expressions.Expression;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.expressions.Slot;
+import org.apache.doris.nereids.trees.expressions.functions.NoneMovableFunction;
+import org.apache.doris.nereids.util.ExpressionUtils;
+import org.apache.doris.nereids.util.PlanUtils;
 
+import com.google.common.collect.ImmutableMap;
+
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Common interface for logical/physical project.
@@ -33,21 +41,93 @@ public interface Project {
     List<NamedExpression> getProjects();
 
     /**
-     * Generate a map that the key is the project output slot, corresponding value is the expression produces the slot.
-     * Note that alias is striped off.
+     * Generate a map that the key is the alias slot, corresponding value is the expression produces the slot.
+     * For example:
+     * <pre>
+     * projects:
+     * [a, alias(b as c), alias((d + e + 1) as f)]
+     * result map:
+     * c -> b
+     * f -> d + e + 1
+     * </pre>
      */
-    default Map<Slot, Expression> getSlotToProducer() {
-        return getProjects()
-                .stream()
-                .collect(Collectors.toMap(
-                        NamedExpression::toSlot,
-                        namedExpr -> {
-                            if (namedExpr instanceof Alias) {
-                                return ((Alias) namedExpr).child();
-                            } else {
-                                return namedExpr;
-                            }
-                        })
-                );
+    default Map<Slot, Expression> getAliasToProducer() {
+        return ExpressionUtils.generateReplaceMap(getProjects());
+    }
+
+    /**
+     * combine upper level and bottom level projections
+     * 1. alias combination, for example
+     * proj(x as y, b) --> proj(a as x, b, c) =>(a as y, b)
+     * 2. remove used projection in bottom project
+     * @param childProject bottom project
+     * @return project list for merged project
+     */
+    default List<NamedExpression> mergeProjections(Project childProject) {
+        List<NamedExpression> projects = new ArrayList<>();
+        projects.addAll(PlanUtils.mergeProjections(childProject.getProjects(), getProjects()));
+        for (NamedExpression expression : childProject.getProjects()) {
+            // keep NoneMovableFunction for later use
+            if (expression.containsType(NoneMovableFunction.class)) {
+                projects.add(expression);
+            }
+        }
+        return projects;
+    }
+
+    /**
+     * find projects, if not found the slot, then throw AnalysisException
+     */
+    static List<? extends Expression> findProject(
+            Collection<? extends Expression> expressions,
+            List<? extends NamedExpression> projects) throws AnalysisException {
+        Map<ExprId, NamedExpression> exprIdToProject = projects.stream()
+                .collect(ImmutableMap.toImmutableMap(NamedExpression::getExprId, p -> p));
+
+        return ExpressionUtils.rewriteDownShortCircuit(expressions,
+                expr -> {
+                    if (expr instanceof Slot) {
+                        Slot slot = (Slot) expr;
+                        ExprId exprId = slot.getExprId();
+                        NamedExpression project = exprIdToProject.get(exprId);
+                        if (project == null) {
+                            throw new AnalysisException("ExprId " + slot.getExprId() + " no exists in " + projects);
+                        }
+                        return project;
+                    }
+                    return expr;
+                });
+    }
+
+    /** isAllSlots */
+    default boolean isAllSlots() {
+        for (NamedExpression project : getProjects()) {
+            if (!project.isSlot()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * project(A as B) is eventually slot project, where A is a slot
+     */
+    default boolean isEventuallyAllSlots() {
+        for (NamedExpression project : getProjects()) {
+            if (!project.isSlot() && !(project instanceof Alias && project.child(0) instanceof Slot)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** containsNoneMovableFunction */
+    default boolean containsNoneMovableFunction() {
+        for (NamedExpression expression : getProjects()) {
+            if (expression.containsType(NoneMovableFunction.class)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

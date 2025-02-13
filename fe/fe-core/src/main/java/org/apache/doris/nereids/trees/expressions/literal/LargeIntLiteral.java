@@ -22,13 +22,14 @@ import org.apache.doris.common.AnalysisException;
 import org.apache.doris.nereids.trees.expressions.visitor.ExpressionVisitor;
 import org.apache.doris.nereids.types.LargeIntType;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Objects;
 
 /**
  * large int type literal
  */
-public class LargeIntLiteral extends Literal {
+public class LargeIntLiteral extends IntegerLikeLiteral {
 
     private final BigInteger value;
 
@@ -55,5 +56,20 @@ public class LargeIntLiteral extends Literal {
             throw new org.apache.doris.nereids.exceptions.AnalysisException(
                     "Can not convert to legacy literal: " + value, e);
         }
+    }
+
+    @Override
+    public double getDouble() {
+        return value.doubleValue();
+    }
+
+    @Override
+    protected BigDecimal getBigDecimalValue() {
+        return new BigDecimal(value);
+    }
+
+    @Override
+    public Number getNumber() {
+        return value;
     }
 }
