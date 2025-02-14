@@ -16,32 +16,56 @@
 // under the License.
 
 #pragma once
-#include <queue>
+#include <stddef.h>
+#include <stdint.h>
 
+#include <memory>
+#include <vector>
+
+#include "common/status.h"
 #include "vec/common/sort/sorter.h"
+
+namespace doris {
+#include "common/compile_check_begin.h"
+class ObjectPool;
+class RowDescriptor;
+class RuntimeProfile;
+class RuntimeState;
+
+namespace vectorized {
+class Block;
+class VSortExecExprs;
+} // namespace vectorized
+} // namespace doris
 
 namespace doris::vectorized {
 
 class TopNSorter final : public Sorter {
+    ENABLE_FACTORY_CREATOR(TopNSorter);
+
 public:
-    TopNSorter(VSortExecExprs& vsort_exec_exprs, int limit, int64_t offset, ObjectPool* pool,
+    TopNSorter(VSortExecExprs& vsort_exec_exprs, int64_t limit, int64_t offset, ObjectPool* pool,
                std::vector<bool>& is_asc_order, std::vector<bool>& nulls_first,
-               const RowDescriptor& row_desc);
+               const RowDescriptor& row_desc, RuntimeState* state, RuntimeProfile* profile);
 
     ~TopNSorter() override = default;
 
-    Status append_block(Block* block, bool* mem_reuse) override;
+    Status append_block(Block* block) override;
 
     Status prepare_for_read() override;
 
     Status get_next(RuntimeState* state, Block* block, bool* eos) override;
 
+    size_t data_size() const override;
+
     static constexpr size_t TOPN_SORT_THRESHOLD = 256;
 
 private:
-    Status _do_sort(Block* block, bool* mem_reuse);
+    Status _do_sort(Block* block);
 
     std::unique_ptr<MergeSorterState> _state;
+    const RowDescriptor& _row_desc;
 };
 
+#include "common/compile_check_end.h"
 } // namespace doris::vectorized

@@ -20,10 +20,13 @@ package org.apache.doris.nereids.rules.exploration.join;
 /**
  * JoinReorderContext for Duplicate free.
  * Paper:
+ * - The Complexity of Transformation-Based Join Enumeration
  * - Optimizing Join Enumeration in Transformation-based Query Optimizers
  * - Improving Join Reorderability with Compensation Operators
  */
 public class JoinReorderContext {
+    public static final JoinReorderContext EMPTY = new JoinReorderContext();
+
     // left deep tree
     private boolean hasCommute = false;
     private boolean hasLAsscom = false;
@@ -35,6 +38,8 @@ public class JoinReorderContext {
     private boolean hasExchange = false;
     private boolean hasRightAssociate = false;
     private boolean hasLeftAssociate = false;
+
+    private boolean isLeadingJoin = false;
 
     public JoinReorderContext() {
     }
@@ -49,6 +54,7 @@ public class JoinReorderContext {
         this.hasLeftAssociate = joinReorderContext.hasLeftAssociate;
         this.hasRightAssociate = joinReorderContext.hasRightAssociate;
         this.hasCommuteZigZag = joinReorderContext.hasCommuteZigZag;
+        this.isLeadingJoin = joinReorderContext.isLeadingJoin;
     }
 
     /**
@@ -61,6 +67,7 @@ public class JoinReorderContext {
         hasExchange = false;
         hasRightAssociate = false;
         hasLeftAssociate = false;
+        isLeadingJoin = false;
     }
 
     public boolean hasCommute() {
@@ -109,5 +116,13 @@ public class JoinReorderContext {
 
     public void setHasCommuteZigZag(boolean hasCommuteZigZag) {
         this.hasCommuteZigZag = hasCommuteZigZag;
+    }
+
+    public boolean isLeadingJoin() {
+        return isLeadingJoin;
+    }
+
+    public void setLeadingJoin(boolean leadingJoin) {
+        isLeadingJoin = leadingJoin;
     }
 }

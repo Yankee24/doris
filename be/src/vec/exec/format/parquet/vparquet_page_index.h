@@ -17,13 +17,28 @@
 
 #pragma once
 #include <common/status.h>
-#include <gen_cpp/parquet_types.h>
+#include <stdint.h>
 
-#include "exprs/expr_context.h"
+#include <vector>
+
+#include "exec/olap_common.h"
+
+namespace cctz {
+class time_zone;
+} // namespace cctz
+namespace doris {
+namespace vectorized {
+struct FieldSchema;
+struct RowRange;
+} // namespace vectorized
+} // namespace doris
+namespace tparquet {
+class ColumnChunk;
+class ColumnIndex;
+class OffsetIndex;
+} // namespace tparquet
 
 namespace doris::vectorized {
-class ParquetReader;
-struct RowRange;
 
 class PageIndex {
 public:
@@ -32,15 +47,14 @@ public:
     Status create_skipped_row_range(tparquet::OffsetIndex& offset_index, int total_rows_of_group,
                                     int page_idx, RowRange* row_range);
     Status collect_skipped_page_range(tparquet::ColumnIndex* column_index,
-                                      std::vector<ExprContext*> conjuncts,
-                                      std::vector<int>& page_range);
+                                      ColumnValueRangeType& col_val_range,
+                                      const FieldSchema* col_schema,
+                                      std::vector<int>& skipped_ranges, const cctz::time_zone& ctz);
     bool check_and_get_page_index_ranges(const std::vector<tparquet::ColumnChunk>& columns);
     Status parse_column_index(const tparquet::ColumnChunk& chunk, const uint8_t* buff,
-                              tparquet::ColumnIndex* _column_index);
+                              tparquet::ColumnIndex* column_index);
     Status parse_offset_index(const tparquet::ColumnChunk& chunk, const uint8_t* buff,
-                              int64_t buffer_size, tparquet::OffsetIndex* _offset_index);
-    bool _filter_page_by_min_max(ExprContext* conjunct_expr, const std::string& encoded_min,
-                                 const std::string& encoded_max);
+                              tparquet::OffsetIndex* offset_index);
 
 private:
     friend class ParquetReader;

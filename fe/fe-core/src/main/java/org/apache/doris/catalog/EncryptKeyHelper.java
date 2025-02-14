@@ -32,9 +32,15 @@ public class EncryptKeyHelper {
 
     public static void createEncryptKey(CreateEncryptKeyStmt stmt) throws UserException {
         EncryptKeyName name = stmt.getEncryptKeyName();
-        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(name.getDb());
-        db.addEncryptKey(stmt.getEncryptKey());
+        createEncryptKey(name.getDb(), stmt.getEncryptKey(), stmt.isIfNotExists());
     }
+
+    public static void createEncryptKey(String dbName, EncryptKey encryptKey,
+                                        boolean isIfNotExists) throws UserException {
+        Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(dbName);
+        db.addEncryptKey(encryptKey, isIfNotExists);
+    }
+
 
     public static void replayCreateEncryptKey(EncryptKey encryptKey) throws MetaNotFoundException {
         String dbName = encryptKey.getEncryptKeyName().getDb();
@@ -45,7 +51,7 @@ public class EncryptKeyHelper {
     public static void dropEncryptKey(DropEncryptKeyStmt stmt) throws UserException {
         EncryptKeyName name = stmt.getEncryptKeyName();
         Database db = Env.getCurrentInternalCatalog().getDbOrDdlException(name.getDb());
-        db.dropEncryptKey(stmt.getEncryptKeysSearchDesc());
+        db.dropEncryptKey(stmt.getEncryptKeysSearchDesc(), stmt.isIfExists());
     }
 
     public static void replayDropEncryptKey(EncryptKeySearchDesc encryptKeySearchDesc) throws MetaNotFoundException {

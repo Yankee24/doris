@@ -45,6 +45,7 @@ abstract class SuiteScript extends Script {
             return
         }
 
+        log.info("run ${context.file.absolutePath}")
         try {
             context.createAndRunSuite(suiteName, group, suiteBody)
         } catch (Throwable t) {
@@ -59,6 +60,10 @@ abstract class SuiteScript extends Script {
             groupPath = path.substring(0, path.indexOf(File.separator + "sql"))
         }
         List<String> groups = ["default"]
+
+        if (groupPath.contains("nonConcurrent")) {
+            groups.add("nonConcurrent")
+        }
 
         def grouped_p = groupPath.split(File.separator)
             .collect {it.trim()}
@@ -76,7 +81,6 @@ abstract class SuiteScript extends Script {
              // There is no specified group, mark it as p0
              groups.add("p0")
         }
-        log.info("path: ${path}, groupPath: ${groupPath}".toString())
         return groups.join(",")
     }
 }

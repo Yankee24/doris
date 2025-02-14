@@ -17,18 +17,46 @@
 
 #include "vparquet_page_reader.h"
 
+#include <gen_cpp/parquet_types.h>
+#include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
+
+#include "common/compiler_util.h" // IWYU pragma: keep
+#include "common/config.h"
+#include "io/fs/buffered_reader.h"
+#include "util/runtime_profile.h"
+#include "util/slice.h"
 #include "util/thrift_util.h"
+
+namespace doris {
+namespace io {
+struct IOContext;
+} // namespace io
+} // namespace doris
 
 namespace doris::vectorized {
 
-static constexpr size_t initPageHeaderSize = 128;
+static constexpr size_t INIT_PAGE_HEADER_SIZE = 128;
 
-PageReader::PageReader(BufferedStreamReader* reader, uint64_t offset, uint64_t length)
-        : _reader(reader), _start_offset(offset), _end_offset(offset + length) {}
+std::unique_ptr<PageReader> create_page_reader(io::BufferedStreamReader* reader,
+                                               io::IOContext* io_ctx, uint64_t offset,
+                                               uint64_t length, int64_t num_values,
+                                               const tparquet::OffsetIndex* offset_index) {
+    if (offset_index) {
+        return std::make_unique<PageReaderWithOffsetIndex>(reader, io_ctx, offset, length,
+                                                           num_values, offset_index);
+    } else {
+        return std::make_unique<PageReader>(reader, io_ctx, offset, length);
+    }
+}
 
-Status PageReader::next_page_header() {
+PageReader::PageReader(io::BufferedStreamReader* reader, io::IOContext* io_ctx, uint64_t offset,
+                       uint64_t length)
+        : _reader(reader), _io_ctx(io_ctx), _start_offset(offset), _end_offset(offset + length) {}
+
+Status PageReader::_parse_page_header() {
     if (UNLIKELY(_offset < _start_offset || _offset >= _end_offset)) {
         return Status::IOError("Out-of-bounds Access");
     }
@@ -41,24 +69,32 @@ Status PageReader::next_page_header() {
 
     const uint8_t* page_header_buf = nullptr;
     size_t max_size = _end_offset - _offset;
-    size_t header_size = std::min(initPageHeaderSize, max_size);
+    size_t header_size = std::min(INIT_PAGE_HEADER_SIZE, max_size);
+    const size_t MAX_PAGE_HEADER_SIZE = config::parquet_header_max_size_mb << 20;
     uint32_t real_header_size = 0;
     while (true) {
+        if (UNLIKELY(_io_ctx && _io_ctx->should_stop)) {
+            return Status::EndOfFile("stop");
+        }
         header_size = std::min(header_size, max_size);
-        RETURN_IF_ERROR(_reader->read_bytes(&page_header_buf, _offset, &header_size));
+        RETURN_IF_ERROR(_reader->read_bytes(&page_header_buf, _offset, header_size, _io_ctx));
         real_header_size = header_size;
+        SCOPED_RAW_TIMER(&_statistics.decode_header_time);
         auto st =
                 deserialize_thrift_msg(page_header_buf, &real_header_size, true, &_cur_page_header);
         if (st.ok()) {
             break;
         }
-        if (_offset + header_size >= _end_offset ||
-            real_header_size > config::parquet_header_max_size) {
-            return Status::IOError("Failed to deserialize parquet page header");
+        if (_offset + header_size >= _end_offset || real_header_size > MAX_PAGE_HEADER_SIZE) {
+            return Status::IOError(
+                    "Failed to deserialize parquet page header. offset: {}, "
+                    "header size: {}, end offset: {}, real header size: {}",
+                    _offset, header_size, _end_offset, real_header_size);
         }
         header_size <<= 2;
     }
 
+    _statistics.parse_page_header_num++;
     _offset += real_header_size;
     _next_header_offset = _offset + _cur_page_header.compressed_page_size;
     _state = HEADER_PARSED;
@@ -78,12 +114,13 @@ Status PageReader::get_page_data(Slice& slice) {
     if (UNLIKELY(_state != HEADER_PARSED)) {
         return Status::IOError("Should generate page header first to load current page data");
     }
+    if (UNLIKELY(_io_ctx && _io_ctx->should_stop)) {
+        return Status::EndOfFile("stop");
+    }
     slice.size = _cur_page_header.compressed_page_size;
-    RETURN_IF_ERROR(_reader->read_bytes(slice, _offset));
-    DCHECK_EQ(slice.size, _cur_page_header.compressed_page_size);
+    RETURN_IF_ERROR(_reader->read_bytes(slice, _offset, _io_ctx));
     _offset += slice.size;
     _state = INITIALIZED;
     return Status::OK();
 }
-
 } // namespace doris::vectorized
